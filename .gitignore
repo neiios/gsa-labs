@@ -1,0 +1,3 @@
+*.png
+*.wav
+!song_16_48.wav
