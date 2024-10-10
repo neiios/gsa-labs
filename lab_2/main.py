@@ -68,7 +68,6 @@ def calculate_energy(samples, frame_length, frame_shift, sample_rate):
         start = i * frame_shift
         end = start + frame_length
         frame = samples[start:end]
-        frame = frame * np.hamming(len(frame))  # Apply windowing if desired
         energies[i] = np.sum(frame ** 2)
     time_axis = (np.arange(num_frames) * frame_shift) / sample_rate
     return energies, time_axis
@@ -82,7 +81,7 @@ def calculate_zcr(samples, frame_length, frame_shift, sample_rate):
         end = start + frame_length
         frame = samples[start:end]
         signs = np.sign(frame)
-        signs[signs == 0] = 1  # Treat zero as positive
+        signs[signs == 0] = 1
         zcr = np.sum(np.abs(np.diff(signs))) / (2 * len(frame))
         zcrs[i] = zcr
     time_axis = (np.arange(num_frames) * frame_shift) / sample_rate
