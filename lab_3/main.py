@@ -13,9 +13,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
 )
-from PySide6.QtCore import QUrl, Qt, QThread, Signal, QObject
+from PySide6.QtCore import QUrl, QThread, Signal, QObject
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtGui import QMovie
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -143,14 +142,6 @@ class MainWindow(QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         self.main_layout.addWidget(self.canvas)
 
-        self.spinner_label = QLabel()
-        self.spinner_movie = QMovie("spinner.gif")
-        self.spinner_label.setMovie(self.spinner_movie)
-        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.spinner_label.hide()
-        self.main_layout.addWidget(self.spinner_label)
-
         self.player.playbackStateChanged.connect(self.playback_state_changed)
 
         self.audio_data = None
@@ -191,8 +182,6 @@ class MainWindow(QMainWindow):
             return
 
         self.canvas.hide()
-        self.spinner_label.show()
-        self.spinner_movie.start()
 
         self.processing_thread = QThread()
         self.worker = Worker(self.audio_data, delay_ms)
@@ -217,9 +206,6 @@ class MainWindow(QMainWindow):
 
         self.play_processed_button.setEnabled(True)
         self.plot_waveform_processed()
-
-        self.spinner_movie.stop()
-        self.spinner_label.hide()
         self.canvas.show()
 
     def play_original_audio(self):
