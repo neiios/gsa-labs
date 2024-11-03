@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         self.audio_output.setVolume(0.5)
 
         self.main_widget = QWidget()
-        self.layout = QVBoxLayout(self.main_widget)
+        self.main_layout = QVBoxLayout(self.main_widget)
         self.setCentralWidget(self.main_widget)
 
         self.button_layout = QHBoxLayout()
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.button_layout.addWidget(self.stop_button)
 
-        self.layout.addLayout(self.button_layout)
+        self.main_layout.addLayout(self.button_layout)
 
         self.delay_layout = QHBoxLayout()
         self.delay_label = QLabel("Delay (ms):")
@@ -137,26 +137,26 @@ class MainWindow(QMainWindow):
         self.delay_layout.addWidget(self.delay_label)
         self.delay_layout.addWidget(self.delay_input)
         self.delay_layout.addWidget(self.process_button)
-        self.layout.addLayout(self.delay_layout)
+        self.main_layout.addLayout(self.delay_layout)
 
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(self.canvas)
+        self.main_layout.addWidget(self.canvas)
 
         self.spinner_label = QLabel()
         self.spinner_movie = QMovie("spinner.gif")
         self.spinner_label.setMovie(self.spinner_movie)
-        self.spinner_label.setAlignment(Qt.AlignCenter)
+        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.spinner_label.hide()
-        self.layout.addWidget(self.spinner_label)
+        self.main_layout.addWidget(self.spinner_label)
 
         self.player.playbackStateChanged.connect(self.playback_state_changed)
 
         self.audio_data = None
         self.processed_data = None
 
-        self.thread = None
+        self.processing_thread = None
 
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -194,25 +194,26 @@ class MainWindow(QMainWindow):
         self.spinner_label.show()
         self.spinner_movie.start()
 
-        self.thread = QThread()
+        self.processing_thread = QThread()
         self.worker = Worker(self.audio_data, delay_ms)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.process)
-        self.worker.finished.connect(self.thread.quit)
+        self.worker.moveToThread(self.processing_thread)
+        self.processing_thread.started.connect(self.worker.process)
+        self.worker.finished.connect(self.processing_thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
+        self.processing_thread.finished.connect(self.processing_thread.deleteLater)
         self.worker.result.connect(self.processing_finished)
 
-        self.thread.start()
+        self.processing_thread.start()
 
     def processing_finished(self, processed_data):
         self.processed_data = processed_data
 
         temp_dir = tempfile.gettempdir()
-        self.processed_file = os.path.join(temp_dir, "processed_audio.wav")
-        wavfile.write(
-            self.processed_file, self.audio_data.sample_rate, self.processed_data
-        )
+        if self.audio_data is not None:
+            self.processed_file = os.path.join(temp_dir, "processed_audio.wav")
+            wavfile.write(
+                self.processed_file, self.audio_data.sample_rate, self.processed_data
+            )
 
         self.play_processed_button.setEnabled(True)
         self.plot_waveform_processed()
@@ -263,7 +264,7 @@ class MainWindow(QMainWindow):
         self.canvas.draw()
 
     def plot_waveform_processed(self):
-        if self.processed_data is None:
+        if self.processed_data is None or self.audio_data is None:
             return
 
         time_axis = np.linspace(
@@ -273,7 +274,6 @@ class MainWindow(QMainWindow):
         )
         samples = self.processed_data
 
-        # Remove the old processed waveform
         self.figure.subplots_adjust(hspace=0.5)
         if len(self.figure.axes) > 1:
             self.figure.axes[1].remove()
