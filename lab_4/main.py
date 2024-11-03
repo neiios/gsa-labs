@@ -1,257 +1,225 @@
-from dataclasses import dataclass
-from pathlib import Path
 import sys
-from typing import cast, Literal, TypeAlias
 import numpy as np
-from numpy.typing import NDArray
-from scipy.io import wavfile
-from scipy import signal
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
-    QWidget,
+    QFileDialog,
+    QPushButton,
     QVBoxLayout,
     QHBoxLayout,
-    QPushButton,
-    QFileDialog,
+    QWidget,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QComboBox,
 )
+from PySide6.QtCore import QThread, Signal, QObject
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.axes import Axes
-
-WindowType = Literal["hann", "hamming"]
-AudioArray: TypeAlias = NDArray[np.int16]
-FloatArray: TypeAlias = NDArray[np.float64]
-ComplexArray: TypeAlias = NDArray[np.complex128]
+from scipy.io import wavfile
+from scipy.signal import get_window
+from scipy.fft import fft
+import matplotlib
 
 
-@dataclass
-class AnalysisParams:
-    start_time: float
-    duration_ms: float
-    n_fft: int
-    window_type: WindowType
+class Worker(QObject):
+    finished = Signal()
+    result = Signal(object, object)  # fft_data, freq_axis
 
-
-class SpectralAnalyzer(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, data, sample_rate):
         super().__init__()
-        self.setWindowTitle("Short-time Spectrum Analysis")
-        self.setGeometry(100, 100, 1200, 800)
+        self.data = data
+        self.sample_rate = sample_rate
 
-        # Initialize data attributes
-        self.signal_data: AudioArray | None = None
-        self.sample_rate: int | None = None
+    def process(self):
+        N = len(self.data)
+        # Perform FFT
+        yf = fft(self.data)
+        # a) Calculate complex modulus
+        yf = np.abs(yf)
 
-        self._setup_ui()
+        # b) Cut off the results
+        if N % 2 == 0:
+            cutoff = N // 2 + 1
+        else:
+            cutoff = (N + 1) // 2
+        yf = yf[:cutoff]
 
-    def _setup_ui(self) -> None:
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QVBoxLayout(main_widget)
+        # c) Apply scaling factor
+        if N % 2 == 0:
+            yf[1:-1] *= 2
+        else:
+            yf[1:] *= 2
 
-        # Controls
-        controls_layout = QHBoxLayout()
+        # Normalize by N
+        yf = yf / N
 
-        # Create and configure widgets
-        self.load_button = QPushButton("Load WAV File")
-        self.load_button.clicked.connect(self.load_file)
+        # d) Generate frequency values
+        xf = np.linspace(0.0, self.sample_rate / 2, cutoff)
 
-        self.start_time_input = QLineEdit("0.0")
-        self.duration_input = QLineEdit("20")
-        self.padding_input = QLineEdit("4096")
-        self.window_input = QLineEdit("hann")
-        self.analyze_button = QPushButton("Analyze")
-        self.analyze_button.clicked.connect(self.analyze_signal)
+        self.result.emit(yf, xf)
+        self.finished.emit()
 
-        # Add widgets to layout with labels
-        widgets = [
-            (self.load_button, None),
-            (self.start_time_input, "Start Time (s):"),
-            (self.duration_input, "Duration (ms):"),
-            (self.padding_input, "FFT Size:"),
-            (self.window_input, "Window:"),
-            (self.analyze_button, None),
-        ]
 
-        for widget, label_text in widgets:
-            if label_text:
-                controls_layout.addWidget(QLabel(label_text))
-            controls_layout.addWidget(widget)
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Short-Term Spectral Analysis")
+        self.resize(1000, 800)
 
-        layout.addLayout(controls_layout)
+        self.audio_data = None
+        self.sample_rate = None
+        self.time_axis = None
+        self.selected_data = None
+        self.selected_time_axis = None
+        self.windowed_data = None
+        self.fft_data = None
+        self.freq_axis = None
 
-        # Create matplotlib figure
-        self.figure = Figure(figsize=(12, 8))
+        self.main_widget = QWidget()
+        self.main_layout = QVBoxLayout(self.main_widget)
+        self.setCentralWidget(self.main_widget)
+
+        self.file_layout = QHBoxLayout()
+        self.select_button = QPushButton("Select WAV File")
+        self.select_button.clicked.connect(self.select_file)
+        self.file_layout.addWidget(self.select_button)
+        self.main_layout.addLayout(self.file_layout)
+
+        self.selection_layout = QHBoxLayout()
+        self.start_time_label = QLabel("Start Time (s):")
+        self.start_time_input = QLineEdit()
+        self.duration_label = QLabel("Duration (s):")
+        self.duration_input = QLineEdit()
+        self.window_label = QLabel("Window Function:")
+        self.window_combo = QComboBox()
+        self.window_combo.addItems(["hamming", "hann"])
+        self.process_button = QPushButton("Process")
+        self.process_button.clicked.connect(self.process_audio)
+        self.process_button.setEnabled(False)
+
+        self.selection_layout.addWidget(self.start_time_label)
+        self.selection_layout.addWidget(self.start_time_input)
+        self.selection_layout.addWidget(self.duration_label)
+        self.selection_layout.addWidget(self.duration_input)
+        self.selection_layout.addWidget(self.window_label)
+        self.selection_layout.addWidget(self.window_combo)
+        self.selection_layout.addWidget(self.process_button)
+        self.main_layout.addLayout(self.selection_layout)
+
+        self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+        self.main_layout.addWidget(self.canvas)
 
-    def load_file(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open WAV File", "", "WAV Files (*.wav)"
-        )
-        if not file_path:
-            return
+        self.processing_thread = None
 
+    def select_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select a WAV file", "", "WAV files (*.wav)")
+        if file_path:
+            self.load_audio_data(file_path)
+            self.process_button.setEnabled(True)
+
+    def load_audio_data(self, file_path):
         try:
-            sample_rate, data = wavfile.read(Path(file_path))
-            self.sample_rate = sample_rate
+            self.sample_rate, data = wavfile.read(file_path)
+            if data.ndim == 2:
+                data = data[:, 0]
+            self.audio_data = data.astype(np.float32)
 
-            # Ensure the data is in the correct format
-            if isinstance(data, np.ndarray):
-                if data.ndim > 1:
-                    self.signal_data = data[:, 0].astype(np.int16)
-                else:
-                    self.signal_data = data.astype(np.int16)
-                self.plot_signal()
+            if np.max(np.abs(self.audio_data)) > 0:
+                self.audio_data = self.audio_data / np.max(np.abs(self.audio_data))
+
+            self.time_axis = np.linspace(0, len(self.audio_data) / self.sample_rate, num=len(self.audio_data))
+            self.plot_waveform()
         except Exception as e:
-            print(f"Error loading file: {e}")
+            QMessageBox.warning(self, "Error", f"Could not load audio file: {e}")
 
-    def get_analysis_params(self) -> AnalysisParams:
-        return AnalysisParams(
-            start_time=float(self.start_time_input.text()),
-            duration_ms=float(self.duration_input.text()),
-            n_fft=int(self.padding_input.text()),
-            window_type=cast(WindowType, self.window_input.text().lower()),
-        )
-
-    def plot_signal(self) -> None:
-        if self.signal_data is None or self.sample_rate is None:
-            return
-
+    def plot_waveform(self):
         self.figure.clear()
-        ax1: Axes = self.figure.add_subplot(211)
-        time = np.arange(len(self.signal_data), dtype=np.float64) / float(
-            self.sample_rate
-        )
-        ax1.plot(time, self.signal_data)
-        ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Amplitude")
-        ax1.set_title("Time Domain Signal")
-        ax1.grid(True)
+        self.ax1 = self.figure.add_subplot(311)
+        self.ax1.plot(self.time_axis, self.audio_data, color="blue", alpha=0.7)
+        self.ax1.set_title("Entire Signal")
+        self.ax1.set_xlabel("Time [s]")
+        self.ax1.set_ylabel("Amplitude")
+        self.ax1.grid(True)
         self.canvas.draw()
 
-    def apply_window(
-        self, signal_segment: AudioArray, window_type: WindowType
-    ) -> FloatArray:
-        window_funcs = {
-            "hann": signal.windows.hann,
-            "hamming": signal.windows.hamming,
-        }
-        window = window_funcs[window_type](len(signal_segment))
-        return signal_segment.astype(np.float64) * window
-
-    def process_fft(
-        self, fft_result: ComplexArray, n_fft: int
-    ) -> tuple[ComplexArray, int]:
-        if n_fft % 2 == 0:
-            num_points = n_fft // 2 + 1
-            result = fft_result[:num_points].copy()
-            result[1:-1] *= 2
-        else:
-            num_points = (n_fft + 1) // 2
-            result = fft_result[:num_points].copy()
-            result[1:] *= 2
-        return result, num_points
-
-    def analyze_signal(self) -> None:
-        if self.signal_data is None or self.sample_rate is None:
+    def process_audio(self):
+        if self.audio_data is None:
             return
 
-        try:
-            params = self.get_analysis_params()
-            duration_s = params.duration_ms / 1000.0
+        start_time = float(self.start_time_input.text())
+        duration = float(self.duration_input.text())
+        start_sample = int(start_time * self.sample_rate)
+        end_sample = start_sample + int(duration * self.sample_rate)
+        if end_sample > len(self.audio_data):
+            end_sample = len(self.audio_data)
+        self.selected_data = self.audio_data[start_sample:end_sample]
+        self.selected_time_axis = self.time_axis[start_sample:end_sample]
 
-            # Extract signal segment
-            start_sample = int(params.start_time * self.sample_rate)
-            segment_length = int(duration_s * self.sample_rate)
-            signal_segment = self.signal_data[
-                start_sample : start_sample + segment_length
-            ]
+        if len(self.selected_data) == 0:
+            QMessageBox.warning(self, "Error", "Selected duration is too short.")
+            return
 
-            # Process signal
-            windowed_segment = self.apply_window(signal_segment, params.window_type)
-            fft_result = np.fft.fft(windowed_segment, n=params.n_fft)
-            fft_result, num_points = self.process_fft(fft_result, params.n_fft)
+        window_type = self.window_combo.currentText().lower()
+        window = get_window(window_type, len(self.selected_data))
+        self.windowed_data = self.selected_data * window
 
-            # Calculate frequency axis and magnitude spectrum
-            freq = np.linspace(
-                0, float(self.sample_rate) / 2, num=len(fft_result), dtype=np.float64
-            )
-            magnitude_db = 20 * np.log10(np.abs(fft_result) + 1e-10).astype(np.float64)
-
-            self.plot_analysis_results(
-                signal_segment,
-                params.start_time,
-                params.duration_ms,
-                freq,
-                magnitude_db,
-                params.window_type,
-                params.n_fft,
-            )
-
-        except ValueError as e:
-            print(f"Error during analysis: {e}")
-
-    def plot_analysis_results(
-        self,
-        signal_segment: AudioArray,
-        start_time: float,
-        duration_ms: float,
-        freq: FloatArray,
-        magnitude_db: FloatArray,
-        window_type: str,
-        n_fft: int,
-    ) -> None:
         self.figure.clear()
+        self.start_processing_thread()
 
-        # Time domain plot
-        ax1: Axes = self.figure.add_subplot(211)
-        if self.sample_rate is not None:
-            sample_rate_float = float(self.sample_rate)
-            time_segment = (
-                np.arange(len(signal_segment), dtype=np.float64) / sample_rate_float
-                + start_time
-            )
-            ax1.plot(time_segment, signal_segment)
-            ax1.set_xlabel("Time (s)")
-            ax1.set_ylabel("Amplitude")
-            ax1.set_title(f"Signal Segment ({duration_ms} ms)")
-            ax1.grid(True)
+    def start_processing_thread(self):
+        self.processing_thread = QThread()
+        self.worker = Worker(self.windowed_data, self.sample_rate)
+        self.worker.moveToThread(self.processing_thread)
+        self.processing_thread.started.connect(self.worker.process)
+        self.worker.finished.connect(self.processing_thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.processing_thread.finished.connect(self.processing_thread.deleteLater)
+        self.worker.result.connect(self.processing_finished)
+        self.processing_thread.start()
 
-            # Frequency domain plot
-            ax2: Axes = self.figure.add_subplot(212)
-            ax2.plot(freq, magnitude_db, label="Magnitude (dB)")
-            ax2.set_xlabel("Frequency (Hz)")
-            ax2.set_ylabel("Magnitude (dB)")
-            ax2.set_title(
-                f"Amplitude Spectrum (Window: {window_type}, FFT size: {n_fft})"
-            )
-            ax2.grid(True)
-            ax2.set_xscale("log")
+    def processing_finished(self, fft_data, freq_axis):
+        self.fft_data = fft_data
+        self.freq_axis = freq_axis
+        self.plot_selected_waveform()
+        self.plot_spectrum()
+        self.figure.tight_layout()
+        self.canvas.draw()
 
-            # Set y-axis limits
-            max_db = float(np.max(magnitude_db))
-            ax2.set_ylim(max_db - 80, max_db + 5)
+    def plot_selected_waveform(self):
+        self.ax1 = self.figure.add_subplot(311)
+        self.ax1.plot(self.time_axis, self.audio_data, color="blue", alpha=0.7)
+        self.ax1.set_title("Entire Signal")
+        self.ax1.set_xlabel("Time [s]")
+        self.ax1.set_ylabel("Amplitude")
+        self.ax1.grid(True)
 
-            # Add frequency markers
-            notable_freqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
-            ax2.set_xticks(notable_freqs)
-            ax2.set_xticklabels([f"{f}" for f in notable_freqs])
+        self.ax2 = self.figure.add_subplot(312)
+        self.ax2.plot(self.selected_time_axis, self.selected_data, color="green", alpha=0.7)
+        self.ax2.set_title("Selected Signal Portion")
+        self.ax2.set_xlabel("Time [s]")
+        self.ax2.set_ylabel("Amplitude")
+        self.ax2.grid(True)
 
-            ax2.legend()
-            self.figure.tight_layout()
-            self.canvas.draw()
+    def plot_spectrum(self):
+        self.ax3 = self.figure.add_subplot(313)
+        self.ax3.plot(self.freq_axis, self.fft_data, color="red", alpha=0.7)
+        self.ax3.set_title("Amplitude Spectrum")
+        self.ax3.set_xlabel("Frequency [Hz]")
+        self.ax3.set_ylabel("Amplitude")
+        self.ax3.set_xscale("log")
+        self.ax3.grid(True)
 
-
-def main() -> None:
-    app = QApplication(sys.argv)
-    window = SpectralAnalyzer()
-    window.show()
-    sys.exit(app.exec())
+    def closeEvent(self, event):
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
-    main()
+    matplotlib.use("QtAgg")
+    app = QApplication(sys.argv)
+
+    w = MainWindow()
+    w.show()
+
+    sys.exit(app.exec())
