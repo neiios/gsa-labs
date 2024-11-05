@@ -20,6 +20,7 @@ from scipy.io import wavfile
 from scipy.signal import get_window
 from scipy.fft import fft
 import matplotlib
+from matplotlib.ticker import ScalarFormatter
 
 
 class Worker(QObject):
@@ -64,7 +65,7 @@ class Worker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Short-Term Spectral Analysis")
+        self.setWindowTitle("Fourier Lab 4")
         self.resize(1000, 800)
 
         self.audio_data = None
@@ -124,10 +125,7 @@ class MainWindow(QMainWindow):
             self.sample_rate, data = wavfile.read(file_path)
             if data.ndim == 2:
                 data = data[:, 0]
-            self.audio_data = data.astype(np.float32)
-
-            if np.max(np.abs(self.audio_data)) > 0:
-                self.audio_data = self.audio_data / np.max(np.abs(self.audio_data))
+            self.audio_data = data
 
             self.time_axis = np.linspace(0, len(self.audio_data) / self.sample_rate, num=len(self.audio_data))
             self.plot_waveform()
@@ -203,12 +201,15 @@ class MainWindow(QMainWindow):
         self.ax2.grid(True)
 
     def plot_spectrum(self):
+        formatter = ScalarFormatter()
+        formatter.set_scientific(False)
         self.ax3 = self.figure.add_subplot(313)
         self.ax3.plot(self.freq_axis, self.fft_data, color="red", alpha=0.7)
         self.ax3.set_title("Amplitude Spectrum")
         self.ax3.set_xlabel("Frequency [Hz]")
         self.ax3.set_ylabel("Amplitude")
         self.ax3.set_xscale("log")
+        self.ax3.xaxis.set_major_formatter(formatter)
         self.ax3.grid(True)
 
     def closeEvent(self, event):
