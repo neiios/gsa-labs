@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         self.ax3.set_title("Fourier Transform")
         self.ax3.set_xlabel("Frequency [Hz]")
         self.ax3.set_ylabel("Magnitude")
-        self.ax3.set_xscale("log")
+        # self.ax3.set_xscale("log")
         self.ax3.xaxis.set_major_formatter(formatter)
         self.ax3.grid(True)
 
