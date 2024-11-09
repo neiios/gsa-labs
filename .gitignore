@@ -1,3 +1,7 @@
 *.png
 *.wav
-!song_16_48.wav
+*.txt
+.zed
+.vscode
+.idea
+__pycache__
