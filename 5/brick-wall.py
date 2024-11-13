@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.fft import rfft, irfft, rfftfreq
 from scipy.io import wavfile
 
-file_path = "best-part.wav"
+file_path = "best_part.wav"
 sample_rate, audio_data = wavfile.read(file_path)
 
 if audio_data.ndim > 1:

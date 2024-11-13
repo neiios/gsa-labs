@@ -4,5 +4,7 @@
 .zed
 .vscode
 .idea
-!best-part.wav
+!best_part.wav
+!filtered_best_part.wav
+!better_filter_best_part.wav
 __pycache__
